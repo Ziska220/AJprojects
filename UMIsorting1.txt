@@ -1,0 +1,26 @@
+#1 I trimmed the index off of the UMI read leaving only the UMI (8 nucleotides)
+
+fastx_trimmer -f 7 -l 14 -z -Q 33 -i CGATGT_S1_L001_I1_001.fastq -o index_trimmed.fastq.gz
+
+#? I would like to learn how to use a zipped file as input here 
+
+
+#2 I added the trimmed UMI to the beginning of both paried reads 
+
+paste -d '\0' <(echo; sed -n '1,${n;p;}' index_trimmed.fastq | sed G) ../Chr21rDNA/CGATGT_S1_L001_R1_001.fastq | sed '/^$/d' > CGATGT_S1_L001_IR1_001.fastq
+
+paste -d '\0' <(echo; sed -n '1,${n;p;}' index_trimmed.fastq | sed G) ../Chr21rDNA/CGATGT_S1_L001_R2_001.fastq | sed '/^$/d' > CGATGT_S1_L001_IR2_001.fastq
+
+#? Again I would like to learn to read in zipped files and output zipped files
+
+
+#3 I used sftp and the put command to move the files to the tesla server
+
+
+#4 I used jay's bowtie scipt to align the paired ends to the human genome resulting in one file with both aligned paried reads. There is no identifier left of which pair they represent but both have UMI at the beginning of the read.
+ 
+
+#5 I used samtools to convert the BAM file to a fastq file
+
+
+#6 I used UMItools to remove UMI from the beginning of each aligned read and put in the first line of the FASTQ
