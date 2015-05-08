@@ -19,3 +19,6 @@ $ grep -w 0$ bpchr21.bed > bpzerochr21.bed
 
 #6 Count the number of lines in both the chr21 bp alignment (output6.bed) and the chr21 0 alignment file (bpzeriochr21.bed)
 $ wc -l <file>
+
+#7 Move reads that had >0 alignments to a file
+$ awk '$3>0' bpchr21.bed > bpchr21grtzero.bed
