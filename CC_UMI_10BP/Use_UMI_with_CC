@@ -1,0 +1,19 @@
+1- Need to add the 10bp barcode from R2 to R1.
+
+2- First make a file with the first 10 characters of each line in R2 (this contains the barcode in the read line).
+	$cut -c-10 <file.fastq> > <first10file.fastq>
+
+3- Append the sequence line from the first10file to R1 so that each R1 read begins with the same barcode as it's corresponding R2 read
+	$ paste -d '\0' <(echo; sed -n '1,${n;p;}' <first10file.fastq> | sed G) <R1> | sed '/^$/d' > <first10R1.fastq>
+
+4- Use umitools trim to put remove 10BP from the beginning of each read and add to the name of the read. 
+	$ umitools trim <first10R1.fastq> NNNNNNNNNN > <first10R1_trim.fastq>
+	$ umitools trim <R2.fastq> NNNNNNNNNN > <R2_trim.fastq>
+
+5- Use bowtie to align the pairs to the genome. This gives you one bam file.
+
+6- Use umitools rmdup (remove duplicate) to save only one read per barcode for any given start site.
+	$ umitools rmdup <alignment.bam>  <alignment_rmvdup.bam> > <alignment_rmvdup.bed>
+
+NOTE
+-The paired reads are in the same order in R1 as in R2. IE Read 1 from R1 is paired with Read 1 from R2. 
