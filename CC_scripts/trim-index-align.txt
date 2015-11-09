@@ -1,0 +1,298 @@
+1- I made a new file with just the first 10 characters of each line of the file containing the UMI. This gave me a file with just the UMI on the appropriate line.
+	$ cut -c-10 CTA_SU2PB-Pair.fastq > SU2PB-UMI.fastq
+ 
+2- I trimmed the index off of the first read to remove barcode and plasmid sequence. 
+	$ fastx_trimmer -f 28 -l 76 -z -Q 33 -i CTA_SU2PB.fastq -o head R1-2-trim-CTA_SU2PB.fastq 
+
+3- I added the UMI from step #1 to the beginning of read 1.
+	$ paste -d '\0' <(echo; sed -n '1,${n;p;}' SU2PB-UMI.fastq | sed G) R1-2-trim-CTA_SU2PB.fastq | sed '/^$/d' > R1-3-trim-CTA_SU2PB.fastq
+
+4- I used UMI tools to remove the barcode from beginning of read1 and read2 and place it at the end of the read name
+	$ umitools trim R1-3-trim-CTA_SU2PB.fastq NNNNNNNNNN > R1-4-trim-UMI-CTA_SU2PB.fastq
+
+	$ umitools trim CTA_SU2PB-pair.fastq NNNNNNNNNN > R2-2-CTA_SU2PB-pair.fastq
+
+5- Run align scrip with the files from step #4
+
+###RUN align.sh ...script at bottom of page   
+This script uses bowtie2 to align the paired reads to hg19 genome while requring the paired reads to both map within 1200bp of eachother. 
+
+	$ bsub < align.sh
+
+###Prepare align file for analysis. 
+6- Change bam alignment file to bed
+
+	$ bedtools bamtobed -i alignment.bam > 1-align.bed
+
+7- Move chr locations barcode to a new file
+
+	$ sed -i -e 's/_/ /g' 1-align.bed 
+
+	$ awk '{print $1, $2, $3, $5}' 1-align.bed > 2-align.bed
+
+8- Move read 1s to a new file 
+	
+	$ grep '/1' 2-align.bed > 3-align-R1.bed
+
+9- Remove read 1 designation
+	
+	$ sed -i -e 's/\/1/ /g' 3-align-R1.bed 
+
+10- Rearange columns, sort, and find uniq reads based on chr location 1 and barcode (does not account for barcode mis-reads)
+
+	$ awk '{print $1 "\t" $2 "\t" $4 "\t" $3}' 3-align-R1.bed > 4-re-align-R1.bed 
+
+	$ sort 4-re-align-R1.bed | rev | uniq -f 1 | rev > 5-align.bed
+	
+	$ awk '{print $1 "\t" $2 "\t" $4 "\t" $3}' 5-align.bed > 6-re-align.bed
+
+###RUN exactbar.py ...script at bottom of page.  
+This script only keeps exact barcodes so uniquness can be determined later. 
+
+	$ bsub < exactbar.py
+		(python exactbar.py 6-re-align.bed)
+
+###RUN CC_gene.sh ...script at bottom of page
+This script creates a file with the genes that have N number of alignments with an N number of basepair window around that gene. 
+Add your file and paramters at the beginning of the script and then run the script bsub < CC_genes.sh
+
+Paramters to change:
+
+file=rmstart-CC5dox.bed
+name=CC5
+genefile=refGene.bed
+bpwindow=5000
+hits=3
+
+
+###Do the previous steps for your controls
+###RUN CC_controls_genes.sh ...script at bottom of page
+This script does the same as above except it removes alignmnents that have over 2 exact overlaps with the nodox control and removes genes that have over 4 piggybac control alignments.
+Finally this script also determines the genes that have overlap with the chang hotair peaks within N number of basepairs.  
+Add your files and parameters at the beginning of the script and then run the script bsub < CC_controls_genes.sh
+
+Paramters to change:
+
+file=rmstart-CC5dox.bed
+ctrl1=rmstart-CC5nodox.bed
+ctrl2=rmstart-CC5PB.bed
+name=SU2
+genefile=refGene.bed
+bpwindow=5000
+hits=3
+chang=hglft_genome_267b_3af6e0.bed
+changwin=250000
+
+###align.sh###
+
+#! /usr/bin/env bash
+
+#BSUB -J bowtie2-PB
+#BSUB -o %J.out
+#BSUB -e %J.err
+#BSUB -n 6
+
+BOWTIE_IDX="/vol3/home/jhessel/ref/genomes/hg19/hg19"
+
+FASTQ_R1="R1-4-barread_SU2PB.fastq"
+FASTQ_R2="R2-2-barread-SU2PB-Pair.fastq"
+
+BOWTIE_ARGS="--local --no-mixed --no-discordant -X 1200"
+UNALIGN_FQ="unaligned.fq.gz"
+stats=align.stats.txt
+bam=alignment.bam
+
+bowtie2 $BOWTIE_ARGS -x $BOWTIE_IDX --un-conc-gz $UNALIGN_FQ \
+    -1 $FASTQ_R1 -2 $FASTQ_R2 -p 6 \
+    2> $stats \
+    | samtools view -ShuF4 - \
+    | samtools sort -o - sample.temp -m 8G \
+    > $bam
+samtools index $bam
+
+CHROM_SIZE=/vol3/home/jhessel/ref/genomes/hg19/hg19.chrom.sizes
+bedgraph=alignment.bg
+bigwig=alignment.bw
+bedtools genomecov -ibam $bam -g $CHROM_SIZE -bg > $bedgraph
+bedGraphToBigWig $bedgraph $CHROM_SIZE $bigwig
+
+
+
+
+###exactbar.py###
+
+__author__ = 'karlysindy'
+
+import sys
+
+alignfile = open(sys.argv[1], 'r')
+
+OutFileName1 = "exactbar.bed"
+OutFile1 = open(OutFileName1, 'w')
+
+BarcodeArray=['GTTATGAAGG', 'ATCACTTAAG', 'ATAGCTCAGA', 'CGCCCTCGCA', 'ACCAAAAAAC', 'GACGGGGGTG', 'TCGAAACATA', 'GAGTCGTCTG', 'ATCTACCTGA', 'TCTGCTAGTT']
+
+for line in alignfile:
+    lines = line.strip('\n')
+    linepart = line.split()
+    bar = linepart[3]
+
+    matching = [s for s in BarcodeArray if bar in s]
+
+    if matching != []:
+
+        OutFile1.write(line)
+
+
+
+
+
+
+
+###CC_genes.sh###
+
+ #!/bin/bash 
+
+file=rmstart-CC5dox.bed
+name=CC5
+genefile=refGene.bed
+bpwindow=5000
+hits=3
+
+
+####Unique Alignemnts
+#Keep only unique reads from aligned, cleaned reads.
+
+awk '{print $1 "\t" $2 "\t" $4 "\t" $3}' $file > re-$file
+sort re-$file | rev | uniq -f 1 | rev > re-unique-$file
+awk '{print $1 "\t" $4 "\t" $3 "\t" $2}' re-unique-$file > re-re-unique-$file
+sort re-re-unique-$file | rev | uniq -f 1 | rev > re-re-unique-uniq-$file 
+awk '{print $1 "\t" $4 "\t" $2 "\t" $3}' re-re-unique-uniq-$file > $name-uniq.bed
+echo "Number of alignments per file:"
+wc -l $file
+wc -l $name-uniq.bed
+rm re-*
+
+###Genes with 'hits' number of unique alignments
+
+bedtools window -a $genefile -b $name-uniq.bed -c -w $bpwindow > $name$ext-gene-$bpwindow.bed
+awk -v var="$hits" '$13>var' $name$ext-gene-$bpwindow.bed > $name$ext-gene-$bpwindow-$hits.bed 
+awk '{print $1 "\t" $2 "\t" $3 "\t" $13}' $name$ext-gene-$bpwindow-$hits.bed > $name$ext-gene-$bpwindow-$hits-clean.bed
+sort $name$ext-gene-$bpwindow-$hits-clean.bed | rev | uniq -f 2 | rev > $name$ext-gene-$bpwindow-$hits-uniq.bed
+awk '{print $1 "\t" $3 "\t" $2 "\t" $4}' $name$ext-gene-$bpwindow-$hits-uniq.bed > re-$name$ext-gene-$bpwindow-$hits-uniq.bed
+sort re-$name$ext-gene-$bpwindow-$hits-uniq.bed | rev | uniq -f 2 | rev > re-uniq-re-$name$ext-gene-$bpwindow-$hits-uniq.bed
+awk '{print $1 "\t" $3 "\t" $2 "\t" $4}' re-uniq-re-$name$ext-gene-$bpwindow-$hits-uniq.bed > $name$ext-gene-$bpwindow-$hits-uniq.bed
+rm re-*
+wc -l $name$ext-gene-$bpwindow-$hits.bed
+wc -l $name$ext-gene-$bpwindow-$hits-uniq.bed
+rm $name$ext-gene-$bpwindow.bed 
+rm $name$ext-gene-$bpwindow-$hits.bed
+rm $name$ext-gene-$bpwindow-$hits-clean.bed
+rm $name-uniq.bed
+
+
+
+
+
+### CC_controls_genes.sh###
+#!/bin/bash 
+
+date '+%m/%d/%Y_%H:%M:%S'
+
+file=rmstart-CC5dox.bed
+ctrl1=rmstart-CC5nodox.bed
+ctrl2=rmstart-CC5PB.bed
+name=SU2
+genefile=refGene.bed
+bpwindow=5000
+hits=3
+chang=hglft_genome_267b_3af6e0.bed
+changwin=250000
+
+
+####Unique Alignemnts
+#Keep only unique reads from aligned, cleaned reads.
+
+echo "Number of alignments per file:"
+
+function unique_alignments () {
+awk '{print $1 "\t" $2 "\t" $4 "\t" $3}' $1 > re-$1
+sort re-$1 | rev | uniq -f 1 | rev > re-unique-$1
+awk '{print $1 "\t" $4 "\t" $3 "\t" $2}' re-unique-$1 > re-re-unique-$1
+sort re-re-unique-$1 | rev | uniq -f 1 | rev > re-re-unique-uniq-$1 
+awk '{print $1 "\t" $4 "\t" $2 "\t" $3}' re-re-unique-uniq-$1 > $name-$1-uniq.bed
+wc -l $1
+wc -l $name-$1-uniq.bed
+rm re-*
+}
+
+unique_alignments "$file" 
+unique_alignments "$ctrl1"
+
+###Subtract nodox from dox
+
+bedtools intersect -a $name-$file-uniq.bed -b $name-$ctrl1-uniq.bed -c > $name-dox-ctrl1.bed
+awk '$5<2' $name-dox-ctrl1.bed > $name-dox-nodox-less2.bed
+awk '{print $1 "\t" $2 "\t" $3 "\t" $4}' $name-dox-nodox-less2.bed > $name-dox-sub-nodox.bed
+rm *less2.bed
+rm $name-dox-ctrl1.bed
+rm $name-$file-uniq.bed
+rm $name-$ctrl1-uniq.bed
+wc -l $name-dox-sub-nodox.bed
+
+### Genes with over "hits" number of alignments in Dox minus nodox
+
+bedtools window -a $genefile -b $name-dox-sub-nodox.bed -c -w $bpwindow > $name-dox-sub-nodox-gene-$bpwindow.bed
+awk -v var="$hits" '$13>var' $name-dox-sub-nodox-gene-$bpwindow.bed > $name-dox-sub-nodox-gene-$bpwindow-ovr$hits.bed
+wc -l $name-dox-sub-nodox-gene-$bpwindow-ovr$hits.bed
+rm $name-dox-sub-nodox-gene-$bpwindow.bed
+awk '{print $1 "\t" $2 "\t" $3 "\t" $13}' $name-dox-sub-nodox-gene-$bpwindow-ovr$hits.bed > $name-dox-sub-nodox-gene-$bpwindow-ovr$hits-clean.bed
+sort $name-dox-sub-nodox-gene-$bpwindow-ovr$hits-clean.bed | rev | uniq -f 2 | rev > re-$name-dox-sub-nodox-gene-$bpwindow-ovr$hits-uniq.bed
+awk '{print $1 "\t" $3 "\t" $2 "\t" $4}' re-$name-dox-sub-nodox-gene-$bpwindow-ovr$hits-uniq.bed > re-re-$name-dox-sub-nodox-gene-$bpwindow-ovr$hits-uniq.bed
+sort re-re-$name-dox-sub-nodox-gene-$bpwindow-ovr$hits-uniq.bed | rev | uniq -f 2 | rev > re-re-$name-dox-sub-nodox-gene-$bpwindow-ovr$hits-uniq-uniq.bed
+awk '{print $1 "\t" $3 "\t" $2 "\t" $4}' re-re-$name-dox-sub-nodox-gene-$bpwindow-ovr$hits-uniq-uniq.bed > $name-dox-sub-nodox-gene-$bpwindow-ovr$hits-uniq.bed
+rm $name-dox-sub-nodox-gene-$bpwindow-ovr$hits.bed
+rm $name-dox-sub-nodox-gene-$bpwindow-ovr$hits-clean.bed
+rm $name-dox-sub-nodox.bed
+rm re-*
+wc -l $name-dox-sub-nodox-gene-$bpwindow-ovr$hits-uniq.bed
+
+
+### Genes with over 4 PB
+#control2-PB
+
+unique_alignments "$ctrl2"
+
+bedtools window -a $genefile -b $name-$ctrl2-uniq.bed -c -w $bpwindow > $name-PB-gene-$bpwindow.bed
+awk '$13>4' $name-PB-gene-$bpwindow.bed > $name-PB-gene-$bpwindow-ovr4.bed
+wc -l $name-PB-gene-$bpwindow-ovr4.bed
+rm $name-$ctrl2-uniq.bed
+rm $name-PB-gene-$bpwindow.bed
+
+### Remove gene with over 4 PB from Dox minus NoDox
+
+bedtools window -a $name-dox-sub-nodox-gene-$bpwindow-ovr$hits-uniq.bed -b $name-PB-gene-$bpwindow-ovr4.bed -v > $name-dox-controls-ovr$hits.bed 
+rm $name-PB-gene-$bpwindow-ovr4.bed
+rm $name-dox-sub-nodox-gene-$bpwindow-ovr$hits-uniq.bed
+wc -l $name-dox-controls-ovr$hits.bed
+
+
+### overlap with chang data
+
+bedtools window -a $name-dox-controls-ovr$hits.bed -b $chang -c -w $changwin > $name-dox-controls-ovr$hits-chang-$changwin.bed
+rm $name-dox-controls-ovr$hits.bed
+awk '$5>0' $name-dox-controls-ovr$hits-chang-$changwin.bed > $name-dox-controls-ovr$hits-chang-$changwin-ovr0.bed
+rm $name-dox-controls-ovr$hits-chang-$changwin.bed
+awk '{print $1 "\t" $3 "\t" $2 "\t" $4 "\t" $5}' $name-dox-controls-ovr$hits-chang-$changwin-ovr0.bed > re-$name-dox-controls-ovr$hits-chang-$changwin-ovr0.bed
+sort re-$name-dox-controls-ovr$hits-chang-$changwin-ovr0.bed | rev | uniq -f 3 | rev > re-$name-dox-controls-ovr$hits-chang-$changwin.bed
+awk '{print $1 "\t" $3 "\t" $2 "\t" $4 "\t" $5}' re-$name-dox-controls-ovr$hits-chang-$changwin.bed > unsort-$name-dox-controls-ovr$hits-chang-$changwin.bed 
+sort unsort-$name-dox-controls-ovr$hits-chang-$changwin.bed > $name-dox-controls-ovr$hits-chang-$changwin.bed
+rm unsort*
+rm $name-dox-controls-ovr$hits-chang-$changwin-ovr0.bed
+rm re-*
+wc -l $name-dox-controls-ovr$hits-chang-$changwin.bed
+
+awk '{print $1 "\t" $2 "\t" $3}' $name-dox-controls-ovr$hits-chang-$changwin.bed > $name-dox-controls-ovr$hits-chang-$changwin-cln.bed
+sort $name-dox-controls-ovr$hits-chang-$changwin-cln.bed > $name-dox-controls-ovr$hits-chang-$changwin-cln-s.bed 
+rm $name-dox-controls-ovr$hits-chang-$changwin-cln.bed
+
