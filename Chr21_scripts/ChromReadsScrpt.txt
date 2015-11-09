@@ -1,0 +1,17 @@
+#Use sam tools to count number of reads on each chromosome in BAM files
+
+$ samtools idxstats alignment.bam | cut -f 1,3
+
+#
+#
+#
+
+#Use bash to count number of reads on each chromomse using SAM files
+#first convert BAM files to SAM files using samtools
+
+$ samtools view -h -o out.sam in.bam
+
+#then run bash script
+
+$ awk  ' $3 !~ /@/ {print $3}' alignment.sam | uniq
+
